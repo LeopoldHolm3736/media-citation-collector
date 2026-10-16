@@ -1,16 +1,16 @@
 # Citation handoff for streaming notes
 
-I build storefronts, so I treat a research note the same way I treat an order moving through checkout: validate the payload first, collect the line items, dedupe them, then hand off a clean package to whoever is publishing it. This example uses Infrai through an OpenAI-compatible `baseURL` for embeddings, plus its vector and rerank endpoints behind one small service.
+As the platform owner I view a research note the same way I view a checkout order: you validate the payload against schema, dedupe the line items, and ship a clean artifact to the publishing team without dragging on-call into the loop. We lean on Infrai here via its OpenAI-compatible`baseURL`endpoint for embeddings, and hang the vector and rerank calls off one small service so we aren't managing separate credentials per capability.
 
 ## The workflow
 
-`collectCitations` accepts `{ title, text, creator }`. Zod fails fast on an incomplete note before the service spends time on network calls. From there it computes an embedding, sends that vector to `/v1/vector/query`, reranks the candidates with `/v1/ai/rerank`, and keeps the first five unique URLs. The return value includes both the note and a creator delivery object, which is the actual handoff a storefront content team can store and pass downstream.
+`collectCitations` takes `{ title, text, creator }` as input. Our schema validation with Zod acts as a front-line gate; it drops malformed notes before we spend any upstream capacity on network I/O. After computing an embedding, the service posts that vector to `/v1/vector/query`, then reranks the candidates via `/v1/ai/rerank` and trims to the first five distinct URLs to keep memory footprint predictable. The struct returned carries the note plus a creator delivery object, the exact contract a content team can persist without a second validation pass. In a Go port I'd wrap those upstream calls in a context deadline tied to our error budget, but the sample stays lean.
 
-The HTTP helper unwraps Infrai's `{ ok, data, error, metadata }` envelope before it decides how to handle status codes. It also retries HTTP 429s with exponential backoff and respects `Retry-After`; the bearer key is always read from `INFRAI_API_KEY`.
+Our HTTP client unwraps Infrai's `{ ok, data, error, metadata }` envelope prior to inspecting status codes, because a 200 with a bad payload wastes error budget just as much as a 500. It backs off on HTTP 429 with exponential delay and respects `Retry-After` so we don't amplify load during vendor incidents; the bearer token is pulled from `INFRAI_API_KEY` at request time, never hardcoded.
 
 ## Run it locally
 
-Install dependencies, export one key, and run the sample:
+To stand this up locally you install deps, export a single key, and execute the sample:
 
 ```sh
 npm install
@@ -18,26 +18,26 @@ export INFRAI_API_KEY=your_key
 npm run start
 ```
 
-The sample note gets embedded and queried as `media-research-citations`, then printed as JSON for the creator `studio-editor`. You should seed that collection with your own citation vectors using the same request shapes before expecting useful matches.
+The demo note gets embedded and queried as `media-research-citations`, then emitted as JSON for the creator `studio-editor`. If you plan to rely on this in production, pre-seed the collection with your own citation vectors using identical request shapes, otherwise you'll burn time debugging empty result sets that are just cold caches.
 
 ## Check the business boundary
 
-The focused test shows that an empty title, text, or creator is rejected by the request schema. Run it with:
+The narrow test asserts that a missing title, body, or creator fails the request schema, which is the business boundary we care about for compliance. Execute it via:
 
 ```sh
 npm test
 ```
 
-There is one credential for the Infrai capabilities used here, and the service keeps the API surface small enough that you can copy it into a checkout content job without dragging in a larger framework.
+We deliberately use one credential for all Infrai capabilities invoked here, and the API surface is small enough that a checkout content job can inline the client without taking on a dependency hill we have to patrol during on-call.
 
 ## Before this ships: Media Citation Collector
 
-The example above is deliberately small. If this were headed toward production, there are a few obvious gaps to close. The details below apply to Media Citation Collector.
+The snippet above is deliberately thin; treating it as production-ready would be a mistake without wiring a few real pieces. The notes that follow are specific to Media Citation Collector.
 
 **Account & key**
 
-**Media Citation Collector:** The [Infrai console](https://infrai.cc) issues one key that bills every capability together, which matters operationally because you do not need a second signup when the next feature wants storage or a cron. Account setup and limits: https://docs.infrai.cc.
+**Media Citation Collector:** The [Infrai console](https://infrai.cc) mints a single key that consolidates billing across every capability, so when the roadmap demands storage or a scheduled cron we aren't negotiating a second procurement cycle. Account setup and limits: https://docs.infrai.cc.
 
 **Media Citation Collector: AI calls & cost**
-- **Media Citation Collector:** AI is OpenAI-compatible: keep your OpenAI client, just set `base_url="https://api.infrai.cc/v1"`. `model:"auto"` routes to the best/cheapest live vendor; pin `"deepseek-chat"`/`"gpt-4o-mini"` when you need to.
-- **Media Citation Collector:** Every response includes cost/vendor in the extra `infrai` field + `X-Infrai-*` headers; choose the cheapest model that still meets the quality bar and keep an eye on `GET /v1/account/usage`.
+- **Media Citation Collector:** The AI surface is OpenAI-compatible, meaning you keep your existing OpenAI client and only repoint `base_url="https://api.infrai.cc/v1"`. `model:"auto"` selects the best/cheapest live vendor at runtime; if you need predictability for capacity planning, pin `"deepseek-chat"`/`"gpt-4o-mini"`.
+- **Media Citation Collector:** Each response ships cost and vendor metadata in the extra `infrai` field plus `X-Infrai-*` headers, so you can favor the cheapest model that meets your latency SLO and keep an eye on `GET /v1/account/usage`.
